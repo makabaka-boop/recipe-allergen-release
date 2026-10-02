@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8"/>
+<title>过敏原标签复核台</title>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<style>
+  body{font-family:system-ui,"PingFang SC","Microsoft YaHei",sans-serif;margin:0;background:#f5f6f8;color:#222}
+  header{background:#1f3a5f;color:#fff;padding:10px 20px;display:flex;gap:16px;align-items:center}
+  header h1{font-size:18px;margin:0}
+  nav button{margin-right:8px;padding:6px 14px;border:0;border-radius:4px;cursor:pointer;background:#3a5c88;color:#fff}
+  nav button.on{background:#fff;color:#1f3a5f;font-weight:600}
+  main{padding:16px 20px;max-width:1200px;margin:0 auto}
+  .card{background:#fff;border:1px solid #e2e5ea;border-radius:6px;padding:14px;margin-bottom:14px}
+  .card h3{margin:0 0 10px;font-size:15px}
+  table{border-collapse:collapse;width:100%;font-size:13px}
+  th,td{border:1px solid #e2e5ea;padding:5px 8px;text-align:left;vertical-align:top}
+  th{background:#f0f2f5}
+  button{padding:4px 10px;border:1px solid #1f3a5f;background:#1f3a5f;color:#fff;border-radius:4px;cursor:pointer;font-size:12px}
+  button.ghost{background:#fff;color:#1f3a5f}
+  button.danger{background:#b3372f;border-color:#b3372f}
+  input,select{padding:4px 6px;border:1px solid #c8ccd2;border-radius:4px;font-size:13px;margin-right:6px}
+  .tag{display:inline-block;background:#fff3cd;border:1px solid #e0c56e;border-radius:10px;padding:1px 8px;margin:1px 3px 1px 0;font-size:12px}
+  .st-draft{color:#777}.st-pending_approval{color:#b8860b}.st-released{color:#1a7f37;font-weight:600}
+  .st-re_review{color:#b3372f;font-weight:600}.st-superseded{color:#999;text-decoration:line-through}
+  .path{font-size:12px;color:#555;margin:2px 0 2px 14px}
+  .err{background:#fdecea;border:1px solid #f5c6c0;color:#8c2f28;padding:8px 10px;border-radius:4px;margin-bottom:10px;font-size:13px;white-space:pre-wrap}
+  .row{display:flex;gap:18px;flex-wrap:wrap}
+  .row>div{flex:1;min-width:340px}
+  code{background:#eef1f4;padding:1px 5px;border-radius:3px;font-size:12px}
+</style>
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const {useState, useEffect, useCallback} = React;
+const api = async (path, opts={}) => {
+  const r = await fetch("/api" + path, {
+    headers: {"Content-Type": "application/json"}, ...opts,
+    body: opts.body ? JSON.stringify(opts.body) : undefined,
+  });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error((data.detail || r.statusText) + ` (HTTP ${r.status})`);
+  return data;
+};
+
+function PathView({paths}) {
+  if (!paths || !paths.length) return null;
+  return <div>{paths.map((p, i) => (
+    <div className="path" key={i}>路径{i+1}: {p.map((s, j) => (
+      <span key={j}>{j>0 && " → "}<code>{s.recipe ? s.recipe+" · " : ""}{s.desc}</code></span>
+    ))}</div>
+  ))}</div>;
+}
+
+function Labels({vid}) {
+  const [data, setData] = useState(null);
+  useEffect(() => { api(`/versions/${vid}/labels`).then(setData).catch(e => setData({err: e.message})); }, [vid]);
+  if (!data) return <div>加载中…</div>;
+  if (data.err) return <div className="err">{data.err}</div>;
+  const entries = Object.entries(data.labels);
+  return <div>
+    <div style={{fontSize:12,color:"#666",marginBottom:6}}>快照 <code>{data.snapshot_hash}</code> · <a href={`/api/versions/${vid}/export`} download>导出标签清单(JSON)</a></div>
+    {entries.length === 0 && <div>无过敏原标签</div>}
+    {entries.map(([a, paths]) => (
+      <div key={a} style={{marginBottom:6}}>
+        <span className="tag">{a}</span>
+        <PathView paths={paths}/>
+      </div>
+    ))}
+  </div>;
+}
+
+function VersionCard({v, me, ingredients, batches, recipes, refresh, onError}) {
+  const [item, setItem] = useState({kind:"ingredient", ingredient_id:"", batch_id:"", sub_version_id:"", qty:1});
+  const [sub, setSub] = useState({item_id:"", new_ingredient_id:"", new_batch_id:""});
+  const [diffAgainst, setDiffAgainst] = useState("");
+  const [diff, setDiff] = useState(null);
+  const run = (p) => p.then(refresh).catch(e => onError(e.message));
+
+  const otherVersions = recipes.flatMap(r => r.versions).filter(x => x.id !== v.id);
+  const ingBatches = batches.filter(b => String(b.ingredient_id) === String(item.ingredient_id) && b.status === "active");
+  const subBatches = batches.filter(b => String(b.ingredient_id) === String(sub.new_ingredient_id) && b.status === "active");
+
+  return <div className="card">
+    <h3>{v.recipe_name} · v{v.version_no} <span className={"st-"+v.status}>[{v.status}]</span> <code>{v.snapshot_hash}</code></h3>
+    <div className="row">
+      <div>
+        <table><thead><tr><th>#</th><th>条目</th><th>数量</th><th></th></tr></thead><tbody>
+          {v.items.map(it => <tr key={it.id}>
+            <td>{it.seq}</td><td>{it.desc}</td><td>{it.qty}</td>
+            <td>{v.status==="draft" && <button className="ghost" onClick={()=>run(api(`/versions/${v.id}/items/${it.id}`,{method:"DELETE"}))}>删</button>}</td>
+          </tr>)}
+        </tbody></table>
+        {v.status==="draft" && <div style={{marginTop:8}}>
+          <select value={item.kind} onChange={e=>setItem({...item, kind:e.target.value})}>
+            <option value="ingredient">原料</option><option value="recipe">子配方</option>
+          </select>
+          {item.kind==="ingredient" ? <>
+            <select value={item.ingredient_id} onChange={e=>setItem({...item, ingredient_id:e.target.value, batch_id:""})}>
+              <option value="">选原料</option>
+              {ingredients.map(g=><option key={g.id} value={g.id}>{g.name}</option>)}
+            </select>
+            <select value={item.batch_id} onChange={e=>setItem({...item, batch_id:e.target.value})}>
+              <option value="">不绑批次</option>
+              {ingBatches.map(b=><option key={b.id} value={b.id}>{b.code}</option>)}
+            </select>
+          </> : <>
+            <select value={item.sub_version_id} onChange={e=>setItem({...item, sub_version_id:e.target.value})}>
+              <option value="">选子配方版本</option>
+              {recipes.filter(r=>r.id!==v.recipe_id && r.id<v.recipe_id).flatMap(r=>r.versions.map(x=>
+                <option key={x.id} value={x.id}>{r.name} v{x.version_no} [{x.status}]</option>))}
+            </select>
+          </>}
+          <input style={{width:60}} type="number" value={item.qty} onChange={e=>setItem({...item, qty:+e.target.value})}/>
+          <button onClick={()=>run(api(`/versions/${v.id}/items`,{method:"POST",body:{
+            kind:item.kind, qty:item.qty,
+            ingredient_id:item.ingredient_id||null, batch_id:item.batch_id||null,
+            sub_version_id:item.sub_version_id||null}}))}>添加条目</button>
+        </div>}
+        {(v.status==="draft"||v.status==="pending_approval") && v.items.some(i=>i.kind==="ingredient") && <div style={{marginTop:8}}>
+          <b style={{fontSize:13}}>提出替代原料:</b>{" "}
+          <select value={sub.item_id} onChange={e=>setSub({...sub,item_id:e.target.value})}>
+            <option value="">选条目</option>
+            {v.items.filter(i=>i.kind==="ingredient").map(i=><option key={i.id} value={i.id}>#{i.seq} {i.desc}</option>)}
+          </select>
+          <select value={sub.new_ingredient_id} onChange={e=>setSub({...sub,new_ingredient_id:e.target.value,new_batch_id:""})}>
+            <option value="">替代原料</option>
+            {ingredients.map(g=><option key={g.id} value={g.id}>{g.name}</option>)}
+          </select>
+          <select value={sub.new_batch_id} onChange={e=>setSub({...sub,new_batch_id:e.target.value})}>
+            <option value="">不绑批次</option>
+            {subBatches.map(b=><option key={b.id} value={b.id}>{b.code}</option>)}
+          </select>
+          <button onClick={()=>run(api(`/versions/${v.id}/substitutions`,{method:"POST",body:{
+            item_id:+sub.item_id, new_ingredient_id:+sub.new_ingredient_id,
+            new_batch_id:sub.new_batch_id?+sub.new_batch_id:null, proposer:me}}))}>提出</button>
+        </div>}
+        {v.substitutions.filter(s=>s.status==="proposed").map(s=>
+          <div key={s.id} style={{fontSize:12,marginTop:4}}>
+            提案#{s.id}: 条目{s.item_id} → 原料{s.new_ingredient_id}{s.new_batch_id?`(批次${s.new_batch_id})`:""} by {s.proposer}{" "}
+            <button onClick={()=>run(api(`/substitutions/${s.id}/apply`,{method:"POST",
+              body:{expected_snapshot_hash:v.snapshot_hash}}))}>应用(基于当前快照)</button>
+          </div>)}
+      </div>
+      <div>
+        <h3>标签与传播路径</h3>
+        <Labels vid={v.id}/>
+        <h3 style={{marginTop:10}}>审批</h3>
+        <div style={{fontSize:13}}>
+          确认: {v.confirmations.map(c=>
+            <span key={c.id} className="tag" style={c.status!=="valid"?{textDecoration:"line-through",opacity:.6}:{}}>
+              {c.reviewer}@{c.snapshot_hash.slice(0,6)}</span>)}
+          {v.confirmations.length===0 && "无"}
+        </div>
+        <div style={{marginTop:6}}>
+          {v.status==="draft" && <button onClick={()=>run(api(`/versions/${v.id}/submit`,{method:"POST"}))}>提交审批</button>}
+          {v.status==="pending_approval" && <>
+            <button onClick={()=>run(api(`/versions/${v.id}/confirm`,{method:"POST",body:{reviewer:me}}))}>以 {me} 确认</button>{" "}
+            <button onClick={()=>run(api(`/versions/${v.id}/release`,{method:"POST",body:{released_by:me}}))}>放行</button>
+          </>}
+          {v.status==="re_review" && <span style={{fontSize:12,color:"#b3372f"}}>待复核: 请新建版本重新走审批放行</span>}
+        </div>
+        {v.release && <div style={{fontSize:12,marginTop:4}}>放行记录(不可变): <code>{v.release.snapshot_hash}</code> by {v.release.released_by} @ {v.release.released_at}</div>}
+        <h3 style={{marginTop:10}}>版本差异</h3>
+        <select value={diffAgainst} onChange={e=>setDiffAgainst(e.target.value)}>
+          <option value="">选择对比版本</option>
+          {otherVersions.map(x=><option key={x.id} value={x.id}>{x.recipe_name} v{x.version_no}</option>)}
+        </select>
+        <button className="ghost" onClick={()=>api(`/versions/${v.id}/diff?against=${diffAgainst}`).then(setDiff).catch(e=>onError(e.message))}>对比</button>
+        {diff && <div style={{fontSize:12,marginTop:4}}>
+          <div>新增: {diff.added.map(x=>x.desc).join("、")||"无"}</div>
+          <div>移除: {diff.removed.map(x=>x.desc).join("、")||"无"}</div>
+          <div>变更: {diff.changed.map(x=>`${x.desc} ${x.from_qty}→${x.to_qty}`).join("、")||"无"}</div>
+        </div>}
+      </div>
+    </div>
+  </div>;
+}
+
+function Recipes({me, data, refresh, onError}) {
+  const [name, setName] = useState("");
+  const run = (p) => p.then(refresh).catch(e=>onError(e.message));
+  return <>
+    <div className="card">
+      <input placeholder="新配方名" value={name} onChange={e=>setName(e.target.value)}/>
+      <button onClick={()=>run(api("/recipes",{method:"POST",body:{name}}))}>创建配方</button>
+    </div>
+    {data.recipes.map(r => <div key={r.id}>
+      <div className="card" style={{padding:"8px 14px"}}>
+        <b>{r.name}</b> <button className="ghost" onClick={()=>run(api(`/recipes/${r.id}/versions`,{method:"POST"}))}>新建版本</button>
+      </div>
+      {r.versions.map(v => <VersionCard key={v.id} v={v} me={me} ingredients={data.ingredients}
+        batches={data.batches} recipes={data.recipes} refresh={refresh} onError={onError}/>)}
+    </div>)}
+  </>;
+}
+
+function Ingredients({data, refresh, onError}) {
+  const [ing, setIng] = useState({name:"", allergens:""});
+  const [bat, setBat] = useState({ingredient_id:"", code:""});
+  const run = (p) => p.then(refresh).catch(e=>onError(e.message));
+  return <div className="row">
+    <div className="card"><h3>原料</h3>
+      <input placeholder="名称" value={ing.name} onChange={e=>setIng({...ing,name:e.target.value})}/>
+      <input placeholder="过敏原(逗号分隔)" value={ing.allergens} onChange={e=>setIng({...ing,allergens:e.target.value})}/>
+      <button onClick={()=>run(api("/ingredients",{method:"POST",body:{
+        name:ing.name, allergens:ing.allergens.split(/[,，]/).map(s=>s.trim()).filter(Boolean)}}))}>添加</button>
+      <table style={{marginTop:8}}><thead><tr><th>ID</th><th>名称</th><th>过敏原</th></tr></thead><tbody>
+        {data.ingredients.map(g=><tr key={g.id}><td>{g.id}</td><td>{g.name}</td>
+          <td>{JSON.parse(g.allergens).map(a=><span key={a} className="tag">{a}</span>)}</td></tr>)}
+      </tbody></table>
+    </div>
+    <div className="card"><h3>供应批次</h3>
+      <select value={bat.ingredient_id} onChange={e=>setBat({...bat,ingredient_id:e.target.value})}>
+        <option value="">选原料</option>
+        {data.ingredients.map(g=><option key={g.id} value={g.id}>{g.name}</option>)}
+      </select>
+      <input placeholder="批次号" value={bat.code} onChange={e=>setBat({...bat,code:e.target.value})}/>
+      <button onClick={()=>run(api("/batches",{method:"POST",body:{ingredient_id:+bat.ingredient_id,code:bat.code}}))}>添加批次</button>
+      <table style={{marginTop:8}}><thead><tr><th>ID</th><th>批次</th><th>原料</th><th>状态</th><th></th></tr></thead><tbody>
+        {data.batches.map(b=><tr key={b.id}><td>{b.id}</td><td>{b.code}</td><td>{b.ingredient_id}</td>
+          <td>{b.status}</td>
+          <td>{b.status==="active" && <button className="danger" onClick={()=>run(api(`/batches/${b.id}/recall`,{method:"POST"}))}>召回</button>}</td></tr>)}
+      </tbody></table>
+    </div>
+  </div>;
+}
+
+function ReReview({data}) {
+  return <div className="card"><h3>待复核版本(批次召回传播)</h3>
+    {data.reReview.length===0 && <div>暂无</div>}
+    {data.reReview.map(m => <div key={m.id} style={{marginBottom:10}}>
+      <div>召回标记#{m.id} · 批次 {m.batch_id} · {m.version.recipe_name} v{m.version.version_no}
+        {" "}<span className={"st-"+m.version.status}>[{m.version.status}]</span>
+        {m.version.release && <span style={{fontSize:12}}> · 原放行记录保留: <code>{m.version.release.snapshot_hash}</code></span>}
+      </div>
+      <PathView paths={m.paths}/>
+    </div>)}
+  </div>;
+}
+
+function App() {
+  const [tab, setTab] = useState("recipes");
+  const [me, setMe] = useState(localStorage.getItem("reviewer") || "alice");
+  const [data, setData] = useState({recipes:[], ingredients:[], batches:[], reReview:[]});
+  const [err, setErr] = useState("");
+  const refresh = useCallback(async () => {
+    const [recipes, ingredients, batches, reReview] = await Promise.all([
+      api("/recipes"), api("/ingredients"), api("/batches"), api("/re-review")]);
+    setData({recipes, ingredients, batches, reReview});
+  }, []);
+  useEffect(() => { refresh().catch(e=>setErr(e.message)); }, [refresh]);
+  const onError = (m) => { setErr(m); setTimeout(()=>setErr(""), 6000); };
+  return <>
+    <header><h1>过敏原标签复核台</h1>
+      <nav>
+        <button className={tab==="recipes"?"on":""} onClick={()=>setTab("recipes")}>配方</button>
+        <button className={tab==="ings"?"on":""} onClick={()=>setTab("ings")}>原料与批次</button>
+        <button className={tab==="rr"?"on":""} onClick={()=>setTab("rr")}>待复核({data.reReview.length})</button>
+      </nav>
+      <span style={{marginLeft:"auto",fontSize:13}}>审核者:
+        <input style={{width:90,marginLeft:4}} value={me} onChange={e=>{setMe(e.target.value);localStorage.setItem("reviewer",e.target.value);}}/>
+      </span>
+    </header>
+    <main>
+      {err && <div className="err">{err}</div>}
+      {tab==="recipes" && <Recipes me={me} data={data} refresh={refresh} onError={onError}/>}
+      {tab==="ings" && <Ingredients data={data} refresh={refresh} onError={onError}/>}
+      {tab==="rr" && <ReReview data={data}/>}
+    </main>
+  </>;
+}
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
